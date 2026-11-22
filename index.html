@@ -833,8 +833,11 @@
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button type="submit" class="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white shadow">اتصال و همگام‌سازی</button>
-          <button type="button" id="syncNowBtn" class="pill py-2.5 px-3 rounded-xl text-xs font-bold">↻ بروزرسانی</button>
           <button type="button" id="syncDisconnectBtn" class="pill py-2.5 px-3 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-300">قطع</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2 pt-1">
+          <button type="button" id="syncForcePushBtn" class="pill py-2 px-3 rounded-xl text-xs font-bold">⬆️ ارسال این دستگاه به ابر</button>
+          <button type="button" id="syncForcePullBtn" class="pill py-2 px-3 rounded-xl text-xs font-bold">⬇️ دریافت از ابر</button>
         </div>
       </form>
     </div>
@@ -1054,6 +1057,7 @@
         const jToday = parseJ(TODAY_J);
 
         return {
+          _updatedAt: 0,
           theme: 'light',
           sceneIndex: Math.floor(Math.random() * SCENES.length),
           activeTab: 'today',
@@ -1204,7 +1208,7 @@
         }
       }
 
-      async function pullFromCloud(silent) {
+      async function pullFromCloud(silent, forcePull) {
         if (!syncCfg.token) return;
         updateSyncUi('در حال دریافت...', 'bg-amber-400 animate-pulse');
         try {
@@ -1223,13 +1227,16 @@
             const remote = JSON.parse(fileObj.content);
             const remoteTs = remote._updatedAt || 0;
             const localTs = state._updatedAt || 0;
-            if (remoteTs > localTs && Array.isArray(remote.projects) && Array.isArray(remote.tasks)) {
+            if ((forcePull || remoteTs > localTs || localTs === 0) && Array.isArray(remote.projects) && Array.isArray(remote.tasks)) {
               state = remote;
               try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
               renderAll();
-              if (!silent) showToast('تغییرات جدید از ابر دریافت شد ☁️');
+              if (!silent) showToast('اطلاعات از ابر دریافت شد ☁️');
             } else if (localTs > remoteTs) {
               await pushToCloud(true);
+              if (!silent) showToast('تغییرات این دستگاه به ابر ارسال شد ☁️');
+            } else if (!silent) {
+              showToast('همگام است ✓');
             }
           }
           lastPullAt = Date.now();
@@ -2058,7 +2065,7 @@
 
       function switchTab(tabId) {
         state.activeTab = tabId;
-        saveState();
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
         document.querySelectorAll('[data-tab]').forEach(btn => {
           btn.classList.toggle('active', btn.dataset.tab === tabId);
         });
@@ -3121,11 +3128,22 @@
         if (!tok) { showToast('لطفاً توکن گیت‌هاب را وارد کن'); return; }
         syncCfg = { token: tok, gistId: '' };
         saveSyncCfg(syncCfg);
-        await pullFromCloud(false);
-        await pushToCloud(true);
+        await pullFromCloud(false, false);
       });
 
-      document.getElementById('syncNowBtn').addEventListener('click', () => pullFromCloud(false));
+      document.getElementById('syncForcePushBtn').addEventListener('click', async () => {
+        const tok = document.getElementById('syncTokenInput').value.trim();
+        if (tok) { syncCfg.token = tok; saveSyncCfg(syncCfg); }
+        state._updatedAt = Date.now();
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+        await pushToCloud(false);
+      });
+
+      document.getElementById('syncForcePullBtn').addEventListener('click', async () => {
+        const tok = document.getElementById('syncTokenInput').value.trim();
+        if (tok) { syncCfg.token = tok; saveSyncCfg(syncCfg); }
+        await pullFromCloud(false, true);
+      });
 
       document.getElementById('syncDisconnectBtn').addEventListener('click', () => {
         syncCfg = { token: '', gistId: '' };
