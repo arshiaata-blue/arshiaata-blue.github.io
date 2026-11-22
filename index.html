@@ -324,6 +324,9 @@
             <button type="button" data-open-alerts-modal class="pill py-2 px-2.5 rounded-xl text-xs font-semibold">🔔 هشدارها</button>
             <button type="button" data-open-review-modal class="pill py-2 px-2.5 rounded-xl text-xs font-semibold">✨ جمع‌بندی</button>
           </div>
+          <button type="button" data-open-sync-modal class="w-full pill py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5">
+            <span id="sidebarSyncDot" class="w-2 h-2 rounded-full bg-slate-400"></span><span>☁️ همگام‌سازی</span>
+          </button>
           <div class="grid grid-cols-2 gap-1.5">
             <button type="button" data-export-json class="pill py-1.5 px-2 rounded-xl text-[11px] font-medium">پشتیبان</button>
             <label class="pill py-1.5 px-2 rounded-xl text-[11px] font-medium text-center cursor-pointer">
@@ -751,6 +754,9 @@
         <h3 class="text-sm font-extrabold">تنظیمات و ابزارها</h3>
         <button type="button" data-close-modal="mobileMenuModal" class="pill w-8 h-8 rounded-xl text-sm font-bold">✕</button>
       </div>
+      <button type="button" data-open-sync-modal class="w-full py-2.5 px-3 rounded-2xl text-xs font-bold bg-teal-600 text-white flex items-center justify-center gap-2">
+        <span id="mobileSyncDot" class="w-2 h-2 rounded-full bg-white/70"></span><span>☁️ همگام‌سازی گوشی و لپ‌تاپ</span>
+      </button>
       <div class="grid grid-cols-2 gap-2">
         <button type="button" data-open-alerts-modal class="pill py-2.5 px-3 rounded-2xl text-xs font-bold">🔔 مدیریت هشدارها</button>
         <button type="button" data-open-review-modal class="pill py-2.5 px-3 rounded-2xl text-xs font-bold">✨ گزارش هفتگی</button>
@@ -809,6 +815,31 @@
     </div>
   </div>
 
+  <!-- 8.5. GitHub Gist Cloud Sync Modal -->
+  <div id="syncModal" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4">
+    <div class="modal-panel glass-strong rounded-3xl max-w-md w-full p-5 sm:p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-extrabold">☁️ همگام‌سازی ابری</h3>
+        <button type="button" data-close-modal="syncModal" class="pill w-8 h-8 rounded-xl text-sm font-bold">✕</button>
+      </div>
+      <div class="pill rounded-2xl p-3 flex items-center justify-between text-xs">
+        <span class="font-bold">وضعیت:</span>
+        <span id="syncStatusText" class="font-bold text-muted">متصل نیست</span>
+      </div>
+      <form id="syncForm" class="space-y-3">
+        <div>
+          <label for="syncTokenInput" class="block text-xs font-bold text-muted mb-1">توکن گیت‌هاب (GitHub Token)</label>
+          <input id="syncTokenInput" type="password" dir="ltr" autocomplete="off" placeholder="ghp_..." class="input-glass w-full px-3.5 py-2.5 rounded-xl text-xs text-left" />
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="submit" class="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white shadow">اتصال و همگام‌سازی</button>
+          <button type="button" id="syncNowBtn" class="pill py-2.5 px-3 rounded-xl text-xs font-bold">↻ بروزرسانی</button>
+          <button type="button" id="syncDisconnectBtn" class="pill py-2.5 px-3 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-300">قطع</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- 9. Confirm Modal -->
   <div id="confirmModal" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4">
     <div class="modal-panel glass-strong rounded-3xl max-w-sm w-full p-5 space-y-4">
@@ -826,6 +857,8 @@
       'use strict';
 
       const STORAGE_KEY = 'arshia_calm_planner_v2';
+      const SYNC_CFG_KEY = 'arshia_planner_sync_cfg_v1';
+      const GIST_FILENAME = 'arshia-planner-sync.json';
 
       // ==================== JALALI DATE ENGINE (EXACT) ====================
       const J_MONTHS = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'];
@@ -1098,8 +1131,123 @@
         }
       }
 
-      function saveState() {
+      let syncPushTimer = null;
+      let lastPullAt = 0;
+
+      function loadSyncCfg() {
+        try { return JSON.parse(localStorage.getItem(SYNC_CFG_KEY) || 'null') || { token: '', gistId: '' }; }
+        catch (e) { return { token: '', gistId: '' }; }
+      }
+      function saveSyncCfg(cfg) {
+        try { localStorage.setItem(SYNC_CFG_KEY, JSON.stringify(cfg)); } catch (e) {}
+      }
+      let syncCfg = loadSyncCfg();
+
+      function updateSyncUi(statusLabel, dotColor) {
+        const st = document.getElementById('syncStatusText');
+        if (st && statusLabel) st.textContent = statusLabel;
+        ['sidebarSyncDot', 'mobileSyncDot'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el && dotColor) el.className = `w-2 h-2 rounded-full ${dotColor}`;
+        });
+      }
+
+      async function findOrCreateGist(token) {
+        const headers = { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github+json' };
+        const res = await fetch('https://api.github.com/gists?per_page=30', { headers });
+        if (!res.ok) throw new Error('توکن نامعتبر است یا دسترسی gist ندارد');
+        const list = await res.json();
+        const found = Array.isArray(list) ? list.find(g => g.files && g.files[GIST_FILENAME]) : null;
+        if (found) return found.id;
+
+        // Create new private (secret) gist
+        const createRes = await fetch('https://api.github.com/gists', {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            description: 'Arshia Personal Planner Cloud Sync',
+            public: false,
+            files: { [GIST_FILENAME]: { content: JSON.stringify(state) } }
+          })
+        });
+        if (!createRes.ok) throw new Error('خطا در ساخت فایل ابری');
+        const created = await createRes.json();
+        return created.id;
+      }
+
+      async function pushToCloud(silent) {
+        if (!syncCfg.token) return;
+        updateSyncUi('در حال ذخیره...', 'bg-amber-400 animate-pulse');
+        try {
+          if (!syncCfg.gistId) {
+            syncCfg.gistId = await findOrCreateGist(syncCfg.token);
+            saveSyncCfg(syncCfg);
+          }
+          const res = await fetch(`https://api.github.com/gists/${syncCfg.gistId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `token ${syncCfg.token}`,
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              files: { [GIST_FILENAME]: { content: JSON.stringify(state) } }
+            })
+          });
+          if (!res.ok) throw new Error('خطا در ذخیره ابری');
+          const tStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+          updateSyncUi(`همگام شد (${tStr})`, 'bg-emerald-500');
+          if (!silent) showToast('همگام‌سازی ابری انجام شد ☁️');
+        } catch (err) {
+          updateSyncUi('خطا در اتصال', 'bg-rose-500');
+          if (!silent) showToast(err.message || 'خطا در همگام‌سازی');
+        }
+      }
+
+      async function pullFromCloud(silent) {
+        if (!syncCfg.token) return;
+        updateSyncUi('در حال دریافت...', 'bg-amber-400 animate-pulse');
+        try {
+          if (!syncCfg.gistId) {
+            syncCfg.gistId = await findOrCreateGist(syncCfg.token);
+            saveSyncCfg(syncCfg);
+          }
+          const res = await fetch(`https://api.github.com/gists/${syncCfg.gistId}`, {
+            headers: { 'Authorization': `token ${syncCfg.token}`, 'Accept': 'application/vnd.github+json' },
+            cache: 'no-store'
+          });
+          if (!res.ok) throw new Error('خطا در دریافت از ابر');
+          const data = await res.json();
+          const fileObj = data.files && data.files[GIST_FILENAME];
+          if (fileObj && fileObj.content) {
+            const remote = JSON.parse(fileObj.content);
+            const remoteTs = remote._updatedAt || 0;
+            const localTs = state._updatedAt || 0;
+            if (remoteTs > localTs && Array.isArray(remote.projects) && Array.isArray(remote.tasks)) {
+              state = remote;
+              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+              renderAll();
+              if (!silent) showToast('تغییرات جدید از ابر دریافت شد ☁️');
+            } else if (localTs > remoteTs) {
+              await pushToCloud(true);
+            }
+          }
+          lastPullAt = Date.now();
+          const tStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+          updateSyncUi(`متصل (${tStr})`, 'bg-emerald-500');
+        } catch (err) {
+          updateSyncUi('خطا در اتصال', 'bg-rose-500');
+          if (!silent) showToast(err.message || 'خطا در دریافت ابری');
+        }
+      }
+
+      function saveState(skipCloud) {
+        state._updatedAt = Date.now();
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+        if (!skipCloud && syncCfg.token) {
+          clearTimeout(syncPushTimer);
+          syncPushTimer = setTimeout(() => pushToCloud(true), 1400);
+        }
       }
 
       // ==================== HELPERS ====================
@@ -2309,6 +2457,12 @@
           saveState(); renderGreetingAndMeta(); renderMobileScenePicker();
           showToast(`منظره: ${SCENES[state.sceneIndex].name}`); return;
         }
+        if (e.target.closest('[data-open-sync-modal]')) {
+          closeModal('mobileMenuModal');
+          document.getElementById('syncTokenInput').value = syncCfg.token || '';
+          updateSyncUi(syncCfg.token ? 'متصل' : 'متصل نیست', syncCfg.token ? 'bg-emerald-500' : 'bg-slate-400');
+          openModal('syncModal'); return;
+        }
         if (e.target.closest('[data-open-alerts-modal]')) {
           closeModal('mobileMenuModal'); renderAlertsManager(); openModal('alertsModal'); return;
         }
@@ -2960,9 +3114,40 @@
       if (animFrame) cancelAnimationFrame(animFrame);
       animFrame = requestAnimationFrame(renderNatureFrame);
 
+      // Sync modal form & buttons
+      document.getElementById('syncForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const tok = document.getElementById('syncTokenInput').value.trim();
+        if (!tok) { showToast('لطفاً توکن گیت‌هاب را وارد کن'); return; }
+        syncCfg = { token: tok, gistId: '' };
+        saveSyncCfg(syncCfg);
+        await pullFromCloud(false);
+        await pushToCloud(true);
+      });
+
+      document.getElementById('syncNowBtn').addEventListener('click', () => pullFromCloud(false));
+
+      document.getElementById('syncDisconnectBtn').addEventListener('click', () => {
+        syncCfg = { token: '', gistId: '' };
+        saveSyncCfg(syncCfg);
+        document.getElementById('syncTokenInput').value = '';
+        updateSyncUi('متصل نیست', 'bg-slate-400');
+        showToast('همگام‌سازی ابری قطع شد');
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && syncCfg.token && Date.now() - lastPullAt > 15000) {
+          pullFromCloud(true);
+        }
+      });
+
       // ==================== INIT ====================
       updateInlinePreview();
       switchTab(state.activeTab || 'today');
+      if (syncCfg.token) {
+        updateSyncUi('متصل', 'bg-emerald-500');
+        pullFromCloud(true);
+      }
 
       // Widget Quick Mode (?quick=1)
       if (window.location.search.includes('quick=1')) {
